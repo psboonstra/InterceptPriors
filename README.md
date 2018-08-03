@@ -1,4 +1,4 @@
-# InterceptPriors
+# Intercept Priors
 
 ### Current Suggested Citation
 
