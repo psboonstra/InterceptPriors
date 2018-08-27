@@ -277,6 +277,7 @@ draw_data = function(n = 100,
                      chol_latent_x = 1, 
                      mu_latent_x = 0,
                      x_binom = 1,
+                     x_skew_param = 0,
                      case_control_ratio = NA,
                      seed = .Machine$integer.max
 ) {
@@ -285,9 +286,15 @@ draw_data = function(n = 100,
   n_by_mu_latent_x = matrix(mu_latent_x,nrow=n,ncol=p,byrow=T);
   n_new_by_mu_latent_x = matrix(mu_latent_x,nrow=n_new,ncol=p,byrow=T);
   
+  
   if(is.na(case_control_ratio)) {#Cohort Sampling
-    x = matrix(rnorm(n*p),nrow=n)%*%chol_latent_x + n_by_mu_latent_x;
-    x_new = matrix(rnorm(n_new*p),nrow=n_new)%*%chol_latent_x + n_new_by_mu_latent_x;
+    if(x_skew_param < .Machine$double.eps^0.5) {
+      x = matrix(rnorm(n*p),nrow=n)%*%chol_latent_x + n_by_mu_latent_x;
+      x_new = matrix(rnorm(n_new*p),nrow=n_new)%*%chol_latent_x + n_new_by_mu_latent_x;
+    } else {
+      x = matrix(rnorm(n*p, rgamma(n*p,1/x_skew_param,1/x_skew_param) - 1),nrow=n)%*%chol_latent_x/sqrt(x_skew_param + 1) + n_by_mu_latent_x;
+      x_new = matrix(rnorm(n_new*p, rgamma(n_new*p,1/x_skew_param,1/x_skew_param) - 1),nrow=n_new)%*%chol_latent_x/sqrt(x_skew_param + 1) + n_new_by_mu_latent_x;
+    }
     
     if(length(x_binom)>0) {
       x[,x_binom] = 1*(x[,x_binom,drop = F]>0);
@@ -302,7 +309,11 @@ draw_data = function(n = 100,
     x_control = matrix(0,n_control,p);
     curr_case = curr_control = 0;
     while((curr_case<n_case)|(curr_control<n_control)) {
-      foo = matrix(rnorm(n*p),nrow=n)%*%chol_latent_x + n_by_mu_latent_x;
+      if(x_skew_param < .Machine$double.eps^0.5) {
+        foo = matrix(rnorm(n*p),nrow=n)%*%chol_latent_x + n_by_mu_latent_x;
+      } else {
+        foo = matrix(rnorm(n*p, rgamma(n*p,1/x_skew_param,1/x_skew_param) - 1),nrow=n)%*%chol_latent_x/sqrt(x_skew_param + 1) + n_by_mu_latent_x;
+      }
       if(length(x_binom)>0) {
         foo[,x_binom] = 1*(foo[,x_binom,drop = F]>0);
       }
@@ -319,7 +330,11 @@ draw_data = function(n = 100,
     x = rbind(x_case,x_control);
     y = c(rep(1,n_case),rep(0,n_control));
     
-    x_new = matrix(rnorm(n_new*p),nrow=n_new)%*%chol_latent_x + n_new_by_mu_latent_x;
+    if(x_skew_param < .Machine$double.eps^0.5) {
+      x_new = matrix(rnorm(n_new*p),nrow=n_new)%*%chol_latent_x + n_new_by_mu_latent_x;
+    } else {
+      x_new = matrix(rnorm(n_new*p, rgamma(n_new*p,1/x_skew_param,1/x_skew_param) - 1),nrow=n_new)%*%chol_latent_x/sqrt(x_skew_param + 1) + n_new_by_mu_latent_x;
+    }
     if(length(x_binom)>0) {
       x_new[,x_binom] = 1*(x_new[,x_binom,drop = F]>0);
     }
@@ -333,14 +348,14 @@ draw_data = function(n = 100,
 }
 
 #Main function to run a single simulation 
-
 InterceptSim <- function(niter,#Number of simulations
                          n,#size of training per simulation
                          n_new,#size of validation per simulation
                          true_alpha,#generating intercept parameter
                          true_betas,#generating regression coefficients
                          x_binom,#vector of logicals to indicate which x's are binomial
-                         case_control_ratio=NULL,#
+                         x_skew_param,
+                         case_control_ratio = NA,#
                          mu_latent_x,
                          chol_latent_x,
                          priors_to_fit = NULL,
@@ -352,7 +367,7 @@ InterceptSim <- function(niter,#Number of simulations
                          stan_file_path, 
                          hsbeta_file_name = "HS_VariedIntPriors.stan",
                          logisbeta_file_name = "Logis_VariedIntPriors.stan",
-                         calc_n_over = T,#should n overlap be calculated (set to F to decrease runtime)
+                         calc_n_over = T,#should n overlap be calculated
                          calc_n_comp = T,#same for ncomplete
                          calc_n_piv = T,#same for npviot
                          algorithm2_maxk = 10,#arguments to algorithm 2
@@ -387,26 +402,48 @@ InterceptSim <- function(niter,#Number of simulations
   
   if(missing(logisbeta_file_name) || is.null(logisbeta_file_name)) {
     do_logisbeta_prior = F;
-    warning("skipping logistic(1) prior on beta because no stan file was provided");
+    warning("skipping Logis(1) prior on beta because no stan file was provided");
   } else {
     do_logisbeta_prior = T;
   }
   
   if(is.null(priors_to_fit)) {
     intercept_prior_names = c(
-      "StudT10",
-      "Normal10");
+      "StudTFixed",
+      "NormalFixed");
   } else {
     intercept_prior_names = priors_to_fit;
   }
-  stopifnot(all(names(exppow_prior_args)==grep("EP",intercept_prior_names,value=T)));
+  
+  if(!all(grep("EP",intercept_prior_names,value=T) %in% names(exppow_prior_args)) || !all(names(exppow_prior_args) %in% grep("EP",intercept_prior_names,value=T))) {
+    stop("Each EP-type prior in 'priors_to_fit' should have a correspondingly named element in 'exppow_prior_args', and each element of 'exppow_prior_args' should be fit"); 
+  }
+  
+  for(curr_prior in names(exppow_prior_args)) {
+    if(!all(sort(names(exppow_prior_args[[curr_prior]])) == c("adaptive_scale", "alpha_power", "alpha_scale"))) {
+      stop("each element of 'exppow_prior_args' must be a list containing named objects 'alpha_power', 'alpha_scale', and 'adaptive_scale'");
+    }
+    if(is.na(exppow_prior_args[[curr_prior]]$alpha_scale) && !exppow_prior_args[[curr_prior]]$adaptive_scale) {
+      stop(paste0("Method ", curr_prior, " cannot have a missing value of 'alpha_scale' if it is not to be adaptively estimated, i.e. if 'adaptive_scale = F'"))
+    }
+  }
+  rm(curr_prior);
+  
+  if(length(foo <- setdiff(setdiff(intercept_prior_names,grep("EP",intercept_prior_names,value=T)), c("StudTFixed", "NormalFixed", "LogisAdapt")))) {
+    stop(paste0("The following elements of the argument 'priors_to_fit' were not recognized: {",paste0(foo,collapse=","),"}. 'priors_to_fit' should be a vector including only 'StudTFixed', 'NormalFixed', 'LogisAdapt', and/or 'EP'-type priors")); 
+  }
+  rm(foo);
   
   method_names = paste0(rep(c("HS_","Logis_"),each=length(intercept_prior_names)),rep(intercept_prior_names,times=2));
   
-  
   if(data_analysis) {
-    stopifnot(!is.null(x_all)&!is.null(y_all));
-    stopifnot(is.null(prespecified_training_subsets) || ((nrow(prespecified_training_subsets) == niter) && (ncol(prespecified_training_subsets) <= nrow(x_all)))); 
+    if(is.null(x_all) || is.null(y_all)) {
+      stop("If this is a data analysis, i.e. data_analysis = T, then 'x_all' and 'y_all' must be provided");
+    };
+    
+    if(!is.null(prespecified_training_subsets) && ((nrow(prespecified_training_subsets) != niter) || (ncol(prespecified_training_subsets) > nrow(x_all)))) {
+      stop("If provided, the prespecified set of training/testing partitions, 'prespecified_training_subsets', must be a matrix with number of rows equal to 'niter' and number of columns not exceeding the number of total observations, i.e. the number of rows in 'x_all'")
+    }
     
     store_alpha  = 
       store_beta = 
@@ -425,7 +462,8 @@ InterceptSim <- function(niter,#Number of simulations
     true_alpha = 0;
     true_betas = numeric(p)
     x_binom = NULL;
-    case_control_ratio = NULL;
+    x_skew_param = 0;
+    case_control_ratio = NA;
     mu_latent_x = numeric(p);
     chol_latent_x = diag(1,p);
     if(nrow(x_all) > n) {#Check if frac_training == 1 (within rounding error);
@@ -439,15 +477,17 @@ InterceptSim <- function(niter,#Number of simulations
   
   n = as.integer(n);
   p = length(true_betas);
-  stopifnot(nrow(chol_latent_x)==p & ncol(chol_latent_x) == p);
+  stopifnot(nrow(chol_latent_x) == p & ncol(chol_latent_x) == p);
   if(is.null(mu_latent_x)) {
     mu_latent_x = numeric(p);
   } else {
-    stopifnot(length(mu_latent_x)==p)
+    stopifnot(length(mu_latent_x) == p)
   }
   #Global scale parameter to use for hierarchical shrinkage prior
   if(fit_methods) {
-    stopifnot(hiershrink_prior_num_relevant < p);
+    if(hiershrink_prior_num_relevant >= p) {
+      stop("The prior number of effective variables, 'hiershrink_prior_num_relevant', must be strictly less than the maximum possible number of variables, i.e. 'p'");
+    };
     beta_global_scale = solve_for_hiershrink_scale(hiershrink_prior_num_relevant,
                                                    local_dof = local_dof,
                                                    global_dof = global_dof,
@@ -481,6 +521,7 @@ InterceptSim <- function(niter,#Number of simulations
     store_mean_beta[[i]] =  store_sd_beta[[i]] = store_50CIcoverage_beta[[i]] = store_50CIwidth_beta[[i]] =
       matrix(NA,niter,p,dimnames=list(NULL,true_betas));
   }
+  rm(i);
   ##store expected log posterior density (overall and for events only)
   elpd = elpd_events = elpd_nonevents = store_auc = bayes_rmse = matrix(NA,niter,length(method_names),dimnames=list(NULL,method_names));
   ##Population-prevalence
@@ -513,29 +554,40 @@ InterceptSim <- function(niter,#Number of simulations
   logit_sn = -log(exp(1/2/n)-1);
   #Identify adaptive parameters in novel priors, which are functions of n by way of the likelihood_cutpoints
   if(any(grepl("EP",intercept_prior_names))) {
-    for(k in 1:length(exppow_prior_args)) {
-      curr_prior = names(exppow_prior_args)[k];
-      if(curr_prior%in%intercept_prior_names) {
-        if(exppow_prior_args[[k]]$adaptive_scale) {
-          exppow_prior_args[[k]]$alpha_scale = solve_for_exppow_scale(logit_sn,0.01,exppow_prior_args[[k]]$alpha_power);
-        }
-      } 
+    for(curr_prior in names(exppow_prior_args)) {
+      if(exppow_prior_args[[curr_prior]]$adaptive_scale) {
+        exppow_prior_args[[curr_prior]]$alpha_scale = solve_for_exppow_scale(logit_sn,0.01,exppow_prior_args[[curr_prior]]$alpha_power);
+      }
     }
     rm(curr_prior);
   }
-  if(any(grepl("LogisticAdaptive",intercept_prior_names))) {
+  
+  if(any(grepl("LogisAdapt",intercept_prior_names))) {
     logistic_adaptive_alpha_scale = solve_for_logistic_scale(logit_sn,0.01);
   } else {
     logistic_adaptive_alpha_scale = NULL;
   }
   
-  sd_actual_x = round(sqrt(diag(crossprod(chol_latent_x))),15);
-  mu_actual_x = mu_latent_x;
-  if(length(x_binom)>0) {
-    mu_actual_x[x_binom] = pnorm((mu_latent_x/sd_actual_x)[x_binom]);
-    sd_actual_x[x_binom] = sqrt(mu_actual_x[x_binom]*(1 - mu_actual_x[x_binom]));
+  if(!data_analysis) {
+  #Empirical estimates of *actual* means and sds of x
+  foo = draw_data(n = round(6e6/length(true_betas)),
+                  n_new = 2,
+                  true_alpha = true_alpha,
+                  true_betas = true_betas,
+                  chol_latent_x = chol_latent_x, 
+                  mu_latent_x = mu_latent_x,
+                  x_binom = x_binom,
+                  x_skew_param = x_skew_param,
+                  case_control_ratio = case_control_ratio,
+                  seed = 1);
+  mu_actual_x = round(colMeans(foo$x), 3);
+  sd_actual_x = round(apply(foo$x, 2, sd), 3);
+  rm(foo);
+  } else {
+    mu_actual_x = NA;
+    sd_actual_x = NA;
   }
-  
+   
   i=1;  
   begin = Sys.time();
   stan_compiled=F;
@@ -553,6 +605,7 @@ InterceptSim <- function(niter,#Number of simulations
                       chol_latent_x = chol_latent_x, 
                       mu_latent_x = mu_latent_x,
                       x_binom = x_binom,
+                      x_skew_param = x_skew_param,
                       case_control_ratio = case_control_ratio,
                       seed = data_seeds[i]);
       x = foo$x;
@@ -563,7 +616,7 @@ InterceptSim <- function(niter,#Number of simulations
     } else if(!is.null(prespecified_training_subsets)){
       #Prespecified training/testing partitioning of the data
       curr_samp = prespecified_training_subsets[i,];
-      if(!length(setdiff(curr_samp,1:n)) && !length(setdiff(1:n,curr_samp))) {
+      if(isTRUE(all.equal(sort(curr_samp), 1:nrow(x_all)))) {
         x = x_new = x_all;
         y = y_new = y_all;
       } else {
@@ -673,7 +726,9 @@ InterceptSim <- function(niter,#Number of simulations
         begin_compile = Sys.time();
         
         assign("hsbeta_template",glm_HSBeta(stan_path = paste0(stan_file_path,hsbeta_file_name)));
-        assign("logisbeta_template",glm_LogisBeta(stan_path = paste0(stan_file_path,logisbeta_file_name)));
+        if(do_logisbeta_prior) {
+          assign("logisbeta_template",glm_LogisBeta(stan_path = paste0(stan_file_path,logisbeta_file_name)));
+        }
         
         end_compile = Sys.time();  
         stan_compiled = T;
@@ -681,7 +736,7 @@ InterceptSim <- function(niter,#Number of simulations
       only_prior = F;
       
       ## t3(10)&HS ====##########################################################################
-      curr_prior = "StudT10";
+      curr_prior = "StudTFixed";
       if(curr_prior%in%intercept_prior_names) {
         #HS prior on Betas
         curr_method = paste0("HS_",curr_prior);
@@ -725,8 +780,8 @@ InterceptSim <- function(niter,#Number of simulations
         mean_standardized_beta = colMeans(standardized_beta_samps);
         store_mean_beta[[curr_method]][i,] = mean_standardized_beta/obs_sd_x;
         store_sd_beta[[curr_method]][i,] =  (apply(standardized_beta_samps,2,sd)/obs_sd_x);
-        beta_low = round(apply(standardized_beta_samps,2,quantile,.25)/obs_sd_x,3);
-        beta_high = round(apply(standardized_beta_samps,2,quantile,.75)/obs_sd_x,3);
+        beta_low = round(apply(standardized_beta_samps,2,quantile,0.25)/obs_sd_x,3);
+        beta_high = round(apply(standardized_beta_samps,2,quantile,0.75)/obs_sd_x,3);
         store_50CIcoverage_beta[[curr_method]][i,] = (beta_low < true_betas) & (beta_high > true_betas);
         store_50CIwidth_beta[[curr_method]][i,] = beta_high - beta_low;
         bayes_rmse[i,curr_method] = sqrt(mean(rowSums((standardized_beta_samps/obs_sd_x - matrix_true_betas)^2)));
@@ -789,8 +844,8 @@ InterceptSim <- function(niter,#Number of simulations
         mean_beta = colMeans(beta_samps);
         store_mean_beta[[curr_method]][i,] = mean_beta;
         store_sd_beta[[curr_method]][i,] =  apply(beta_samps,2,sd);
-        beta_low = round(apply(beta_samps,2,quantile,.25),3);
-        beta_high = round(apply(beta_samps,2,quantile,.75),3);
+        beta_low = round(apply(beta_samps,2,quantile,0.25),3);
+        beta_high = round(apply(beta_samps,2,quantile,0.75),3);
         store_50CIcoverage_beta[[curr_method]][i,] = (beta_low < true_betas) & (beta_high > true_betas);
         store_50CIwidth_beta[[curr_method]][i,] = beta_high - beta_low;
         bayes_rmse[i,curr_method] = sqrt(mean(rowSums((beta_samps - matrix_true_betas)^2)));
@@ -817,7 +872,7 @@ InterceptSim <- function(niter,#Number of simulations
       }
       
       ## N(10)&HS ====##########################################################################
-      curr_prior = "Normal10";
+      curr_prior = "NormalFixed";
       if(curr_prior%in%intercept_prior_names) {
         #HS prior on Betas
         curr_method = paste0("HS_",curr_prior);
@@ -861,8 +916,8 @@ InterceptSim <- function(niter,#Number of simulations
         mean_standardized_beta = colMeans(standardized_beta_samps);
         store_mean_beta[[curr_method]][i,] = mean_standardized_beta/obs_sd_x;
         store_sd_beta[[curr_method]][i,] =  (apply(standardized_beta_samps,2,sd)/obs_sd_x);
-        beta_low = round(apply(standardized_beta_samps,2,quantile,.25)/obs_sd_x,3);
-        beta_high = round(apply(standardized_beta_samps,2,quantile,.75)/obs_sd_x,3);
+        beta_low = round(apply(standardized_beta_samps,2,quantile,0.25)/obs_sd_x,3);
+        beta_high = round(apply(standardized_beta_samps,2,quantile,0.75)/obs_sd_x,3);
         store_50CIcoverage_beta[[curr_method]][i,] = (beta_low < true_betas) & (beta_high > true_betas);
         store_50CIwidth_beta[[curr_method]][i,] = beta_high - beta_low;
         bayes_rmse[i,curr_method] = sqrt(mean(rowSums((standardized_beta_samps/obs_sd_x - matrix_true_betas)^2)));
@@ -925,8 +980,8 @@ InterceptSim <- function(niter,#Number of simulations
         mean_beta = colMeans(beta_samps);
         store_mean_beta[[curr_method]][i,] = mean_beta;
         store_sd_beta[[curr_method]][i,] =  apply(beta_samps,2,sd);
-        beta_low = round(apply(beta_samps,2,quantile,.25),3);
-        beta_high = round(apply(beta_samps,2,quantile,.75),3);
+        beta_low = round(apply(beta_samps,2,quantile,0.25),3);
+        beta_high = round(apply(beta_samps,2,quantile,0.75),3);
         store_50CIcoverage_beta[[curr_method]][i,] = (beta_low < true_betas) & (beta_high > true_betas);
         store_50CIwidth_beta[[curr_method]][i,] = beta_high - beta_low;
         bayes_rmse[i,curr_method] = sqrt(mean(rowSums((beta_samps - matrix_true_betas)^2)));
@@ -953,15 +1008,14 @@ InterceptSim <- function(niter,#Number of simulations
       }
       
       ## EP&HS ====##########################################################################
-      for(k in 1:length(exppow_prior_args)) {
-        curr_prior = names(exppow_prior_args)[k];
+      for(curr_prior in names(exppow_prior_args)) {
         if(curr_prior%in%intercept_prior_names) {
           #HS prior on Betas
           curr_method = paste0("HS_",curr_prior);
           alpha_prior_args = list(type = 2,#0 = student-t; 1 = logistic; 2 = exponential power, inc. normal
                                   mean = 0, 
-                                  scale = exppow_prior_args[[k]]$alpha_scale,
-                                  power = exppow_prior_args[[k]]$alpha_power,#ignored unless alpha_prior_type = 2;
+                                  scale = exppow_prior_args[[curr_prior]]$alpha_scale,
+                                  power = exppow_prior_args[[curr_prior]]$alpha_power,#ignored unless alpha_prior_type = 2;
                                   dof = 3#ignored unless alpha_prior_type = 0;
           );
           foo = glm_HSBeta(stan_path = paste0(stan_file_path,hsbeta_file_name), 
@@ -998,8 +1052,8 @@ InterceptSim <- function(niter,#Number of simulations
           mean_standardized_beta = colMeans(standardized_beta_samps);
           store_mean_beta[[curr_method]][i,] = mean_standardized_beta/obs_sd_x;
           store_sd_beta[[curr_method]][i,] =  (apply(standardized_beta_samps,2,sd)/obs_sd_x);
-          beta_low = round(apply(standardized_beta_samps,2,quantile,.25)/obs_sd_x,3);
-          beta_high = round(apply(standardized_beta_samps,2,quantile,.75)/obs_sd_x,3);
+          beta_low = round(apply(standardized_beta_samps,2,quantile,0.25)/obs_sd_x,3);
+          beta_high = round(apply(standardized_beta_samps,2,quantile,0.75)/obs_sd_x,3);
           store_50CIcoverage_beta[[curr_method]][i,] = (beta_low < true_betas) & (beta_high > true_betas);
           store_50CIwidth_beta[[curr_method]][i,] = beta_high - beta_low;
           bayes_rmse[i,curr_method] = sqrt(mean(rowSums((standardized_beta_samps/obs_sd_x - matrix_true_betas)^2)));
@@ -1027,15 +1081,14 @@ InterceptSim <- function(niter,#Number of simulations
       }
       
       ## EP&Logistic(1) ====##########################################################################
-      for(k in 1:length(exppow_prior_args)) {
-        curr_prior = names(exppow_prior_args)[k];
+      for(curr_prior in names(exppow_prior_args)) {
         if(do_logisbeta_prior && curr_prior%in%intercept_prior_names) {
           #Logistic(1) prior on Betas
           curr_method = paste0("Logis_",curr_prior);
           alpha_prior_args = list(type = 2,#0 = student-t; 1 = logistic; 2 = exponential power, inc. normal
                                   mean = 0, 
-                                  scale = exppow_prior_args[[k]]$alpha_scale,
-                                  power = exppow_prior_args[[k]]$alpha_power,#ignored unless alpha_prior_type = 2;
+                                  scale = exppow_prior_args[[curr_prior]]$alpha_scale,
+                                  power = exppow_prior_args[[curr_prior]]$alpha_power,#ignored unless alpha_prior_type = 2;
                                   dof = 3#ignored unless alpha_prior_type = 0;
           );
           foo = glm_LogisBeta(stan_path = paste0(stan_file_path,logisbeta_stan_filename), 
@@ -1071,8 +1124,8 @@ InterceptSim <- function(niter,#Number of simulations
           mean_beta = colMeans(beta_samps);
           store_mean_beta[[curr_method]][i,] = mean_beta;
           store_sd_beta[[curr_method]][i,] =  apply(beta_samps,2,sd);
-          beta_low = round(apply(beta_samps,2,quantile,.25),3);
-          beta_high = round(apply(beta_samps,2,quantile,.75),3);
+          beta_low = round(apply(beta_samps,2,quantile,0.25),3);
+          beta_high = round(apply(beta_samps,2,quantile,0.75),3);
           store_50CIcoverage_beta[[curr_method]][i,] = (beta_low < true_betas) & (beta_high > true_betas);
           store_50CIwidth_beta[[curr_method]][i,] = beta_high - beta_low;
           bayes_rmse[i,curr_method] = sqrt(mean(rowSums((beta_samps - matrix_true_betas)^2)));
@@ -1100,7 +1153,7 @@ InterceptSim <- function(niter,#Number of simulations
       }
       
       ## Logis&HS ====##########################################################################
-      curr_prior = "LogisticAdaptive";
+      curr_prior = "LogisAdapt";
       if(curr_prior%in%intercept_prior_names) {
         #HS prior on Betas
         curr_method = paste0("HS_",curr_prior);
@@ -1144,8 +1197,8 @@ InterceptSim <- function(niter,#Number of simulations
         mean_standardized_beta = colMeans(standardized_beta_samps);
         store_mean_beta[[curr_method]][i,] = mean_standardized_beta/obs_sd_x;
         store_sd_beta[[curr_method]][i,] =  (apply(standardized_beta_samps,2,sd)/obs_sd_x);
-        beta_low = round(apply(standardized_beta_samps,2,quantile,.25)/obs_sd_x,3);
-        beta_high = round(apply(standardized_beta_samps,2,quantile,.75)/obs_sd_x,3);
+        beta_low = round(apply(standardized_beta_samps,2,quantile,0.25)/obs_sd_x,3);
+        beta_high = round(apply(standardized_beta_samps,2,quantile,0.75)/obs_sd_x,3);
         store_50CIcoverage_beta[[curr_method]][i,] = (beta_low < true_betas) & (beta_high > true_betas);
         store_50CIwidth_beta[[curr_method]][i,] = beta_high - beta_low;
         bayes_rmse[i,curr_method] = sqrt(mean(rowSums((standardized_beta_samps/obs_sd_x - matrix_true_betas)^2)));
@@ -1208,8 +1261,8 @@ InterceptSim <- function(niter,#Number of simulations
         mean_beta = colMeans(beta_samps);
         store_mean_beta[[curr_method]][i,] = mean_beta;
         store_sd_beta[[curr_method]][i,] =  apply(beta_samps,2,sd);
-        beta_low = round(apply(beta_samps,2,quantile,.25),3);
-        beta_high = round(apply(beta_samps,2,quantile,.75),3);
+        beta_low = round(apply(beta_samps,2,quantile,0.25),3);
+        beta_high = round(apply(beta_samps,2,quantile,0.75),3);
         store_50CIcoverage_beta[[curr_method]][i,] = (beta_low < true_betas) & (beta_high > true_betas);
         store_50CIwidth_beta[[curr_method]][i,] = beta_high - beta_low;
         bayes_rmse[i,curr_method] = sqrt(mean(rowSums((beta_samps - matrix_true_betas)^2)));
@@ -1264,6 +1317,7 @@ InterceptSim <- function(niter,#Number of simulations
       AllErrBeta_NotStndzd[,k] = sqrt((store_mean_beta[[k]]-matrix_true_betas)^2);
     }
   }
+  rm(k);
   exclude_list = list(c("const_y","divergence"),c("const_y","const_x","copy_x","divergence"));
   MedianErrBeta = 
     MedianEffBeta = 
@@ -1630,15 +1684,15 @@ fast_calculate_sep_stat = function(x_standardized, y, which_stat = "comp", maxk 
 calculate_sep_stat = function(x_standardized, y, which_stat = "comp", maxk = 10, ndraws = 1e3, seed = .Machine$integer.max) {
   set.seed(seed);
   if(which_stat == "comp") {
-    #calculates number of observations needed to remove to induce complete separation
+    #calculates minimum number of observations needed to remove to induce complete separation
     overlap_allowed = F; 
     no_intercept = F; 
   } else if(which_stat == "piv") {
-    #calculates number of observations needed to remove to induce pivotal separation
+    #calculates minimum number of observations needed to remove to induce pivotal separation
     overlap_allowed = F; 
     no_intercept = T; 
   } else if(which_stat == "over") {
-    #calculates number of observations needed to remove to induce quasi-complete separation
+    #calculates minimum number of observations needed to remove to induce quasi-complete separation
     overlap_allowed = T; 
     no_intercept = F; 
   } else {
@@ -1988,14 +2042,14 @@ nondecreasing_subsequence = function(numeric_seq) {
 
 
 solve_for_exppow_scale = function(abs_x,mass_above_abs_x,shape) {
-  stopifnot(mass_above_abs_x < 1 & mass_above_abs_x > 0 & abs_x >0);
+  stopifnot(mass_above_abs_x < 1 && mass_above_abs_x > 0 && abs_x >0);
   foo = function(t) {(pgamma((abs_x/sqrt(2)/t)^shape,1/shape,lower=F) - mass_above_abs_x);}
   uniroot(foo, lower=0, upper = 100)$root;
 }
 
 
 solve_for_logistic_scale = function(abs_x,mass_above_abs_x) {
-  stopifnot(mass_above_abs_x < 1 & mass_above_abs_x > 0 & abs_x >0);
+  stopifnot(mass_above_abs_x < 1 && mass_above_abs_x > 0 && abs_x >0);
   abs_x/log((1-mass_above_abs_x/2)/(mass_above_abs_x/2));
 }
 
@@ -2012,9 +2066,9 @@ solve_for_hiershrink_scale = function(target_mean,
 ) {
   
   
-  stopifnot(target_mean > 0 & target_mean < npar);
+  stopifnot(target_mean > 0 && target_mean < npar);
   lambda = matrix(rt(nsim*npar,df=local_dof),nrow=nsim) * rt(nsim,df=global_dof);
-
+  
   log_tau0 = diff_target = numeric(max_iter);
   log_tau0[1] = log(target_mean/(npar - target_mean)*sigma/sqrt(n));
   

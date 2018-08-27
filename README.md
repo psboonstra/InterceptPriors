@@ -7,7 +7,11 @@ https://biostats.bepress.com/umichbiostat/paper123
 
 ## Executive Summary
 
+The functions <samp>glm_HSBeta</samp> and <samp>glm_LogisBeta</samp> implement the primary methodological development in this manuscript. They are wrappers for code written in STAN that implements Bayesian logistic regressions using horseshoe-type or logistic-type priors on the regression coefficients $\beta$, respectively. Most importantly for this paper, however, they allow the user to choose from a number of priors on the intercept parameter $\alpha$, including a student-$t$, logistic, or exponential-power prior. 
+
 ## Further details
+
+In total there are 
 
 ### Text file
 
