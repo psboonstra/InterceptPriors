@@ -1,8 +1,3 @@
-#################
-#April 15, 2016
-#Phil Boonstra
-#Code to generate a list of lists of simulation settings. 
-################
 
 ################
 #Common settings

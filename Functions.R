@@ -38,10 +38,11 @@ tryCatch.W.E <- function(expr)
 #by the stan program.
 #
 #x_standardized (matrix) matrix of numeric values with number of rows equal to the length of y and number of columns
-#equal to p+q. It is assumed without verification that each column is standardized to whatever scale the prior 
-#expects - in Boonstra and Barbaro, all predictors are marginally generated to have mean zero and unit variance, so no 
-#standardization is conducted. In practice, all data should be standardized to have a common scale before model fitting. 
-#If regression coefficients on the natural scale are desired, they be easily obtained through unstandardizing. 
+#equal to p+q. It is assumed without verification that each column is centered and scaled to whatever scale the prior 
+#expects - in Boonstra, et al., all predictors are marginally generated to have mean zero and unit variance, so no 
+#standardization is conducted. In practice, all data should be standardized to have a common scale before fitting 
+#with priors that share information between predictors, such as the HS prior. If regression coefficients on the natural 
+#scale are desired, they be easily obtained through unstandardizing. 
 #
 #beta_global_scale (pos. real) constants indicating the prior scale of the horseshoe. Corresponds to
 #to 'psi_n' in the notation of Boonstra, et al.
@@ -50,11 +51,31 @@ tryCatch.W.E <- function(expr)
 #et al. never considered local_dof != 1 or global_dof != 1. 
 #
 #slab_precision (pos. real) the slab-part of the regularized horseshoe, this is equivalent to (1/d)^2 in the notation of
-#Boonstra and Barbaro 
+#Boonstra, et al. 
 #
-#alpha_prior_args (list)
+#alpha_prior_args (list) List with components of 'type', 'mean', 'scale', 'power', and 'dof'. The component 'type' specifies
+#which type of prior will be used: type = 0 -> student-t; type = 1 -> logistic; type = 2 -> exponential-power. The component 'mean'
+#gives the location of the prior (used by all types), the component 'scale' gives the scale of the prior (used by all types), 
+#the component 'power' gives the shape parameter for the exponential-power prior (ignored unless type = 2), and the component 
+#'dof' gives the degrees of freedom for the student-t prior (ignored unless type = 1). 
 #
 #only_prior (logical) should all data be ignored, sampling only from the prior?
+#
+#mc_warmup (pos. integer) equivalent to warmup in 'stan()' function (type '?stan')
+#
+#mc_iter_after_warmup (pos. integer) equivalent to iter - warmup in 'stan()' function (type '?stan')
+#
+#mc_chains (pos. integer) equivalent to chains in 'stan()' function (type '?stan')
+#
+#mc_thin (pos. integer) equivalent to thin in 'stan()' function (type '?stan')
+#
+#mc_stepsize (pos. real) equivalent to stepsize in 'stan()' function (type '?stan')
+#
+#mc_adapt_delta_relaxed, mc_adapt_delta,strict (pos. real in [0,1]) Two alternatives to use as values for adapt_delta 
+#in 'stan()' function (type '?stan'). The relaxed version is presumably smaller and will be used for the 
+#standard prior, which has fewer numerical issues. The strict version is for the nab and sab priors.
+#
+#mc_max_treedepth (pos. integer) equivalent to max_treedepth in 'stan()' function (type '?stan')
 #
 #ntries (pos. integer) the stan function will run up to this many times, stopping either when the number of 
 #*divergent transitions* is zero or when ntries has been reached. The reported fit will be that with the fewest number of 
@@ -168,6 +189,24 @@ glm_HSBeta = function(stan_fit = NA,
   }
 }
 
+#DESCRIPTION: Program for fitting a (logistic) GLM equipped with independent, standard logistic 
+#priors on each of the regression coefficients and any of the priors on alpha considered in Boonstra, et al.
+#It has two intended uses: compile stan scripts or analyze data. First, if the user provides nothing but 
+#a valid 'stan_path', then the stan script is compiled. Second, the user provides both a compiled 
+#stanfit object as well as values for y, x_standardized, and any other desired 
+#arguments to actually fit a regression. 
+#
+#ARGUMENTS: (only those distinct from glm_HSBeta are discussed)
+#
+#x_centered (matrix) matrix of numeric values with number of rows equal to the length of y and number of columns
+#equal to p+q. It is assumed without verification that each column is empirically centered. In Boonstra, et al.,
+#all predictors are marginally generated to have mean zero and unit variance, so no centering is conducted. 
+#
+#beta_expit_shape (pos. real) The expit of the regression coefficients are assumed to follow a
+#symmetric beta distribution with shape parameter equal to this value. A symmetric beta distribution with shape
+#equal to 1 is the uniform distribution, and it can be shown easily that if expit(x) ~ unif(0,1), then x ~ logistic(1),
+#as required. 
+
 glm_LogisBeta = function(stan_fit = NA, 
                          stan_path,
                          y = c(0,1),
@@ -269,6 +308,31 @@ glm_LogisBeta = function(stan_fit = NA,
 }
 
 
+#DESCRIPTION: Simulator function for drawing binary outcomes the probabilities of which are logistic-linear
+#functions of normal and/or bernoulli (generated by a latent normal) distributed predictors. 
+#
+#
+#ARGUMENTS:
+#
+#n (pos. integer) size of current data;
+#
+#n_new (pos. integer) size of testing data (for prediction)
+#
+#true_alpha (real) true intercept for generating model
+#
+#true_betas (vector) true regression coefficients for generating model
+#
+#chol_latent_x (matrix) cholesky decomposition of the generating distribution of the (possibly latent) covariates
+#
+#mu_latent_x (vector) mean of the generating distribution fo the (possibly latent) covariates
+#
+#x_binom (vector) logical/{0,1} vector indicating which elements of x should be considered latent values for a bernoulli
+#
+#x_skew_param (non-negative real) number controlling the amount of right skewness to simulate. 0 indicates no skewness 
+#
+#case_control_ratio (NA or positive real) if non-missing, then a case-control sample is generated using this as a ratio. 
+#
+#seed (positive integer) random seed for reproducing the same data
 
 draw_data = function(n = 100,
                      n_new = 100,
@@ -347,17 +411,119 @@ draw_data = function(n = 100,
        y_new = y_new);
 }
 
-#Main function to run a single simulation 
-InterceptSim <- function(niter,#Number of simulations
-                         n,#size of training per simulation
-                         n_new,#size of validation per simulation
-                         true_alpha,#generating intercept parameter
-                         true_betas,#generating regression coefficients
-                         x_binom,#vector of logicals to indicate which x's are binomial
-                         x_skew_param,
-                         case_control_ratio = NA,#
-                         mu_latent_x,
+#DESCRIPTION: This is the parent function used for both the simulation study and the data analyses in 
+#Boonstra, et al. To conduct a simulation study, the user should set data_analysis = F, and 
+#specify the following: n, n_new, true_alpha, true_betas, chol_latent_x, mu_latent_x, x_binom, 
+#x_skew_param, case_control_ratio. Otherwise, if data_analysis = T, then the user must provide
+#x_all and y_all, respectively, the design matrix and outcome vector. The data will be analyzed in one of three
+#ways: if 'prespecified_training_subsets' is provided, then the full data are broken down into 
+#one or more pre-specified training/validation partitions. Otherwise, the data will be randomly
+#partitioned, with the proportion of observations in the training part equal to 'frac_training'; this
+#will be repeated niter times. Finally, if frac_training = 1, niter will be ignored and the full 
+#data will be analyzed once. 
+#The user can modify various characteristics of the underlying HMC chain. A number of operating 
+#characteristics are returned, based both on estimation and prediction. 
+#
+#
+#VALUE: A list of various results. 
+#
+#
+#ARGUMENTS:
+#niter (pos. integer) number of simulated datasets to construct
+#
+#n (pos. integer) size of current data;
+#
+#n_new (pos. integer) size of testing data (for prediction)
+#
+#true_alpha (real) true intercept for generating model
+#
+#true_betas (vector) true regression coefficients for generating model
+#
+#chol_latent_x (matrix) cholesky decomposition of the generating distribution of the (possibly latent) covariates
+#
+#mu_latent_x (vector) mean of the generating distribution fo the (possibly latent) covariates
+#
+#x_binom (vector) logical/{0,1} vector indicating which elements of x should be considered latent values for a bernoulli
+#
+#x_skew_param (non-negative real) number controlling the amount of right skewness to simulate. 0 indicates no skewness 
+#
+#case_control_ratio (NA or positive real) if non-missing, then a case-control sample is generated using this as a ratio. 
+#
+#local_dof, global_dof (pos. integer) numbers indicating the degrees of freedom for lambda_j and tau, respectively. Boonstra, 
+#et al. never considered local_dof != 1 or global_dof != 1. 
+#
+#hiershrink_prior_num_relevant (pos. real)
+#
+#slab_precision (pos. real) the slab-part of the regularized horseshoe, this is equivalent to (1/d)^2 in the notation of
+#Boonstra and Barbaro 
+#
+#exppow_prior_args
+#
+#stan_file_path (character) local path to directory containing stan files
+#
+#hsbeta_filename (character) file name for standard prior
+#
+#logisbeta_file_name (character) file name for sab prior
+#
+#calc_n_over (logical) should n_over be calculated?
+#
+#calc_n_comp (logical) should n_comp be calculated?
+#
+#calc_n_piv (logical) should n_pv be calculated?
+#
+#algorithm2_maxk (pos. integer) MAXK as described in algorithm 2 
+#
+#algorithm2_ndraws (pos. integer) NDRAWS as described in algorithm 2
+#
+#mc_warmup (pos. integer) equivalent to warmup in 'stan()' function (type '?stan')
+#
+#mc_iter_after_warmup (pos. integer) equivalent to iter - warmup in 'stan()' function (type '?stan')
+#
+#mc_chains (pos. integer) equivalent to chains in 'stan()' function (type '?stan')
+#
+#mc_thin (pos. integer) equivalent to thin in 'stan()' function (type '?stan')
+#
+#mc_stepsize (pos. real) equivalent to stepsize in 'stan()' function (type '?stan')
+#
+#mc_adapt_delta_relaxed, mc_adapt_delta,strict (pos. real in [0,1]) Two alternatives to use as values for adapt_delta 
+#in 'stan()' function (type '?stan'). The relaxed version is presumably smaller and will be used for the 
+#standard prior, which has fewer numerical issues. The strict version is for the nab and sab priors.
+#
+#mc_max_treedepth (pos. integer) equivalent to max_treedepth in 'stan()' function (type '?stan')
+#
+#
+#ntries_per_iter (pos. integer) each method will run up to this many times, stopping either when the number of *divergent transitions*
+#is zero or when ntries has been reached. The reported fit will be that with the fewest number of divergent iterations. 
+#
+#random_seed (pos. integer) where to initialize the simulator
+#
+#array_id, scenario (pos. integer) These can be anything and are ignored and returned aftewards
+#
+#fit_methods  (logical) Set to FALSE to do a dry run of the simulator 
+#
+#data_analysis (logical) flag to indicate a data analysis instead of simulation
+#
+#x_all (matrix) design matrix to use if data_analysis = T
+#
+#y_all (vector) outcome vector to use if data_analysis = T
+#
+#frac_training (proportion) fraction of full data to designate as training set at each random partition
+#
+#prespecified_training_subsets (matrix) each row should consist of integer indices 
+#indicating the observations to designate as the training data for that iteration. 
+#
+#verbose (logical) should the function return lots of information from data analysis?
+
+InterceptSim <- function(niter,
+                         n,
+                         n_new,
+                         true_alpha,
+                         true_betas,
                          chol_latent_x,
+                         mu_latent_x,
+                         x_binom ,
+                         x_skew_param,
+                         case_control_ratio = NA,
                          priors_to_fit = NULL,
                          hiershrink_prior_num_relevant,
                          local_dof = 1,
@@ -384,21 +550,15 @@ InterceptSim <- function(niter,#Number of simulations
                          array_id,
                          scenario,
                          fit_methods = T, 
-                         #If both x and y are provided, a single dataset will be analyzed
-                         data_analysis = F,#logical flag to indicate a data analysis instead of simulation
-                         x_all = NULL, #design matrix data analysis
-                         y_all = NULL,#outcomes
-                         frac_training = NULL,#fraction of data to designate as validation
-                         num_partitions = 100,#number of random partitions to implement
-                         prespecified_training_subsets = NULL,#matrix, with each row indicating the observations to designate as training for that iteration
-                         verbose = F#return lots of information from data analysis?
+                         data_analysis = F,
+                         x_all = NULL,
+                         y_all = NULL,
+                         frac_training = NULL,
+                         prespecified_training_subsets = NULL,
+                         verbose = F
 ) {
   set.seed(random_seed);
   data_seeds = sample(.Machine$integer.max,niter);#Mersenne-Twister is seeded by 32 bit integers 
-  
-  if(data_analysis && (niter != num_partitions)) {
-    stop("num_partitions must equal niter if data_analysis == T");
-  }
   
   if(missing(logisbeta_file_name) || is.null(logisbeta_file_name)) {
     do_logisbeta_prior = F;
@@ -468,7 +628,6 @@ InterceptSim <- function(niter,#Number of simulations
     chol_latent_x = diag(1,p);
     if(nrow(x_all) > n) {#Check if frac_training == 1 (within rounding error);
       n_new = nrow(x_all) - n;
-      niter = num_partitions;
     } else {
       n_new = n;
       niter = 1;
@@ -691,7 +850,7 @@ InterceptSim <- function(niter,#Number of simulations
     
     ## Separation statistics ====##########################################################################
     if(calc_n_piv) {
-      phil_approx = fast_calculate_sep_stat(x_standardized = x_standardized,
+      phil_approx = calculate_sep_stat(x_standardized = x_standardized,
                                             y = y,
                                             which_stat = "piv",
                                             maxk = algorithm2_maxk,
@@ -700,7 +859,7 @@ InterceptSim <- function(niter,#Number of simulations
       rm(phil_approx);
     }
     if(calc_n_comp) {
-      phil_approx = fast_calculate_sep_stat(x_standardized = x_standardized,
+      phil_approx = calculate_sep_stat(x_standardized = x_standardized,
                                             y = y,
                                             which_stat = "comp",
                                             maxk = algorithm2_maxk,
@@ -709,7 +868,7 @@ InterceptSim <- function(niter,#Number of simulations
       rm(phil_approx);
     }
     if(calc_n_over) {
-      phil_approx = fast_calculate_sep_stat(x_standardized = x_standardized,
+      phil_approx = calculate_sep_stat(x_standardized = x_standardized,
                                             y = y,
                                             which_stat = "over",
                                             maxk = algorithm2_maxk,
@@ -1388,7 +1547,7 @@ InterceptSim <- function(niter,#Number of simulations
   data_params = list(x_all = x_all, 
                      y_all = y_all,
                      frac_training = frac_training,
-                     num_partitions = num_partitions,
+                     num_partitions = niter,
                      prespecified_training_subsets = prespecified_training_subsets,
                      store_obs_mean_x = store_obs_mean_x,
                      store_obs_sd_x = store_obs_sd_x)
@@ -1467,7 +1626,7 @@ InterceptSim <- function(niter,#Number of simulations
   
 }
 
-fast_calculate_sep_stat = function(x_standardized, y, which_stat = "comp", maxk = 10, ndraws = 1e3, seed = .Machine$integer.max) {
+calculate_sep_stat = function(x_standardized, y, which_stat = "comp", maxk = 10, ndraws = 1e3, seed = .Machine$integer.max) {
   set.seed(seed);
   if(which_stat == "comp") {
     #calculates number of observations needed to remove to induce complete separation
@@ -1679,237 +1838,6 @@ fast_calculate_sep_stat = function(x_standardized, y, which_stat = "comp", maxk 
   }
   return(return_vals)
 }
-
-
-calculate_sep_stat = function(x_standardized, y, which_stat = "comp", maxk = 10, ndraws = 1e3, seed = .Machine$integer.max) {
-  set.seed(seed);
-  if(which_stat == "comp") {
-    #calculates minimum number of observations needed to remove to induce complete separation
-    overlap_allowed = F; 
-    no_intercept = F; 
-  } else if(which_stat == "piv") {
-    #calculates minimum number of observations needed to remove to induce pivotal separation
-    overlap_allowed = F; 
-    no_intercept = T; 
-  } else if(which_stat == "over") {
-    #calculates minimum number of observations needed to remove to induce quasi-complete separation
-    overlap_allowed = T; 
-    no_intercept = F; 
-  } else {
-    stop("'which_stat' must be one of 'comp', 'piv', or 'over'");
-  }
-  
-  n = length(y);
-  p = ifelse(class(x_standardized) == "numeric", 1, ncol(x_standardized));
-  separating_plane = numeric(p+1);
-  min_ub = n;
-  lowest_ub_found = F;
-  solitary_separators = NULL;
-  
-  if(diff(range(y)) < .Machine$double.eps^0.5) {
-    warning("No variation in 'y' means that complete separation is trivially satisfied"); 
-    return_vals = list(statistic = NA,
-                       included_subset = NA,
-                       linear_separator = NA,
-                       solitary_separators = NA);
-  } else if(p == 1) {#If single x caused separation, then, by definition, it was solitary
-    if(no_intercept) {
-      model_uni = glm(y ~ -1 + x_standardized, family = "binomial");
-    } else {
-      model_uni = glm(y ~ x_standardized, family = "binomial");  
-    }
-    fitted_uni = predict(model_uni,type='link');    
-    #THIS LINE IS STILL IN DEVELOPMENT; #foo = aggregate(rep(1,n) ~ y + fitted_uni, FUN=sum);
-    foo = data.frame(y = y,fitted_uni = fitted_uni,const = 1);
-    aggregate_y = foo$y;
-    aggregate_fitted_uni = foo$fitted_uni;
-    aggregate_count = foo[,3];
-    order_increasing_y = order(aggregate_fitted_uni,aggregate_y);
-    order_decreasing_y = order(aggregate_fitted_uni,-aggregate_y);
-    aggregate_fitted_label = cumsum(!duplicated(aggregate_fitted_uni[order_increasing_y]));
-    ncomplete_uni1 = min_to_separate(aggregate_y[order_increasing_y],aggregate_fitted_label,aggregate_count[order_increasing_y], overlap_allowed);
-    ncomplete_uni2 = min_to_separate(aggregate_y[order_decreasing_y],aggregate_fitted_label,aggregate_count[order_decreasing_y], overlap_allowed);
-    min_ub = min(ncomplete_uni1$ub,ncomplete_uni2$ub);
-    min_plane = coef(model_uni);
-    if(ncomplete_uni1$ub <= ncomplete_uni2$ub) {
-      min_subset = sort(order_increasing_y[ncomplete_uni1$sep_subseq]);
-    } else {
-      min_subset = sort(order_decreasing_y[ncomplete_uni2$sep_subseq]);
-    }
-    return_vals = list(statistic = min_ub,
-                       included_subset = min_subset,
-                       linear_separator = min_plane,
-                       solitary_separators = 1 * (min_ub == 0));
-  } else {#Otherwise assume that x_standardized is a matrix and go through each column at a time
-    if(no_intercept) {
-      min_plane = numeric(p);
-      names(min_plane) = paste0("x_standardized",colnames(x_standardized));
-    } else {
-      min_plane = numeric(p+1);
-      names(min_plane) = c("(Intercept)",paste0("x_standardized",colnames(x_standardized)));
-    }
-    for(i in 1:p) {
-      if(no_intercept) {
-        model_uni = glm(y ~ -1 + x_standardized[,i,drop = F], family = "binomial");
-      } else {
-        model_uni = glm(y ~ x_standardized[,i,drop = F], family = "binomial");
-      }
-      fitted_uni = predict(model_uni,type='link');
-      if(diff(range(fitted_uni)) < .Machine$double.eps^0.5) {next;}
-      #THE FOLLOWING LINE IS STILL IN DEVELOPMENT; #foo = aggregate(rep(1,n) ~ y + fitted_uni, FUN=sum);
-      foo = data.frame(y = y,fitted_uni = fitted_uni,const = 1);
-      aggregate_y = foo$y;
-      aggregate_fitted_uni = foo$fitted_uni;
-      aggregate_count = foo[,3];
-      order_increasing_y = order(aggregate_fitted_uni,aggregate_y);
-      order_decreasing_y = order(aggregate_fitted_uni,-aggregate_y);
-      aggregate_fitted_label = cumsum(!duplicated(aggregate_fitted_uni[order_increasing_y]));
-      ncomplete_uni1 = min_to_separate(aggregate_y[order_increasing_y],aggregate_fitted_label,aggregate_count[order_increasing_y], overlap_allowed);
-      ncomplete_uni2 = min_to_separate(aggregate_y[order_decreasing_y],aggregate_fitted_label,aggregate_count[order_decreasing_y], overlap_allowed);
-      curr_min_ub = min(ncomplete_uni1$ub,ncomplete_uni2$ub);
-      if(curr_min_ub < min_ub) {
-        min_ub = curr_min_ub;
-        min_plane = min_plane * 0;
-        #cat("new min_ub =", curr_min_ub,"\n");
-        if(no_intercept) {
-          min_plane[i] = coef(model_uni);
-        } else {
-          min_plane[c(1, 1 + i)] = coef(model_uni);
-        }
-        if(ncomplete_uni1$ub <= ncomplete_uni2$ub) {
-          min_subset = sort(order_increasing_y[ncomplete_uni1$sep_subseq]);
-        } else {
-          min_subset = sort(order_decreasing_y[ncomplete_uni2$sep_subseq]);
-        }
-      }
-      if(curr_min_ub == 0) {
-        solitary_separators = c(solitary_separators,i);
-      }
-    }
-    rm(foo,aggregate_y,aggregate_fitted_uni,aggregate_count,ncomplete_uni1,ncomplete_uni2,curr_min_ub)
-    
-    loop_stop = max(maxk,2);
-    #If the smallest upper bound is 0, then this is trivially the lowest upperbound.
-    lowest_ub_found = (min_ub == 0);
-    #Now if needed go to iterative sampling of subset
-    if(!lowest_ub_found & (loop_stop > 1)) {
-      data_x_standardized = data.frame(x_standardized);
-      
-      combined_data = cbind(x_standardized,y);
-      which_unique = which(!duplicated(combined_data));
-      fitted_heldout = numeric(length(which_unique));
-      affiliated_obs = vector("list",length(which_unique));
-      names(affiliated_obs) = names(fitted_heldout) = which_unique;
-      for(j in which_unique) {
-        curr_remove = as.numeric(which(rowSums(combined_data == rep(combined_data[j,], each = nrow(combined_data))) == ncol(combined_data)));
-        affiliated_obs[[as.character(j)]] = curr_remove;
-        curr_keep = setdiff(1:n,curr_remove);
-        if(no_intercept) {
-          model_subset = glm(y ~ -1 + x_standardized, subset = curr_keep, family = "binomial");
-        } else {
-          model_subset = glm(y ~ x_standardized, subset = curr_keep, family = "binomial");
-        }
-        fitted_heldout[as.character(j)] = predict(model_subset,newdata=data_x_standardized,type='link')[curr_remove[1]];
-      }
-      if(no_intercept) {
-        model_full = glm(y ~ -1 + x_standardized, family = "binomial");
-      } else {
-        model_full = glm(y ~ x_standardized, family = "binomial");
-      }
-      fitted_full = predict(model_full,type='link')[which_unique];
-      weights_y = 1 / abs(fitted_heldout-fitted_full)^0.5;
-      weights_y[y[which_unique]==1] = pmin(weights_y[y[which_unique]==1], sum(1-y) + 1e-3);
-      weights_y[y[which_unique]==0] = pmin(weights_y[y[which_unique]==0], sum(y) + 1e-3);
-      rm(model_full,fitted_full,fitted_heldout,model_subset,curr_keep,curr_remove);
-      
-      j = -1;
-      n_unique = length(which_unique);
-      n_most_likely = round(ndraws/2);#how many of the approximately most likely subsets to look at
-      n_random_weighted = pmax(1, ndraws - n_most_likely);#how many to randomly sample based upon less uniform weights
-      while(T) {
-        j = j + 1;
-        choose_n_nminusj = choose(n_unique, n_unique-j);
-        ten_times_n_most_likely = pmin(choose_n_nminusj, 10 * n_most_likely);
-        #cat(j,min_ub,"\n");
-        if(choose_n_nminusj < ndraws) {#all possible combinations is feasible
-          all_subsets = combn(n_unique,n_unique-j);
-        } else {
-          #combination of most likely weighted subsets
-          #and weighted random sampling from among remaining subsets 
-          if(choose_n_nminusj > ten_times_n_most_likely) {
-            k = max((0:(n_unique-j))[mapply(FUN = "choose",n=n_unique-(0:(n_unique-j)),k=(n_unique-j)-(0:(n_unique-j))) >= ten_times_n_most_likely]);
-            if(k > 0) {
-              all_subsets = rbind(matrix(rep(1:k,times=ten_times_n_most_likely),nrow=k,ncol=ten_times_n_most_likely),k + combn(n_unique-k,n_unique-j-k)[,1:ten_times_n_most_likely]);
-            } else {
-              all_subsets = combn(n_unique,n_unique-j)[,1:ten_times_n_most_likely];
-            }
-          } else {
-            all_subsets = combn(n_unique,n_unique-j);
-          }
-          all_subsets = matrix(order(weights_y,decreasing = T)[all_subsets],nrow=n_unique-j,ncol=ten_times_n_most_likely)
-          all_subsets = all_subsets[,order(colSums(matrix(weights_y[all_subsets],nrow=n_unique-j,ncol=ncol(all_subsets))),decreasing=T)[1:n_most_likely]];
-          all_subsets = cbind(all_subsets,
-                              replicate(5 * n_random_weighted,sample(n_unique,n_unique-j,prob=weights_y)));
-          #replicate(n_random_lessweighted,sample(n,n-j,prob=weights_y_alt)));
-          #all_subsets = replicate(round(ndraws),sample(n,n-j,prob=weights_y));
-          all_subsets = apply(all_subsets,2,sort);
-          all_subsets = all_subsets[,!duplicated(all_subsets,MARGIN = 2),drop = F];
-          all_subsets = all_subsets[,1:min(ndraws,ncol(all_subsets)),drop = F];
-        }
-        all_subsets_weight = matrix(weights_y[all_subsets],nrow=n_unique-j,ncol=ncol(all_subsets));
-        all_subsets = all_subsets[,order(colSums(all_subsets_weight),decreasing = T),drop=F];
-        i = 1;
-        while(!lowest_ub_found & (i < ncol(all_subsets))) {
-          curr_subset = sort(as.numeric(unlist(affiliated_obs[all_subsets[,i]])));
-          if(no_intercept) {
-            model_subset = glm(y ~ -1 + x_standardized, subset = curr_subset, family = "binomial");
-          } else {
-            model_subset = glm(y ~ x_standardized, subset = curr_subset, family = "binomial");
-          }
-          fitted_subset = predict(model_subset, newdata = data_x_standardized,type='link');
-          if(diff(range(fitted_subset)) < .Machine$double.eps^0.5) {i = i+1; next;}
-          #THIS LINE IS STILL IN DEVELOPMENT; #foo = aggregate(rep(1,n) ~ y + fitted_subset, FUN=sum);
-          foo = data.frame(y = y,fitted_subset = fitted_subset,const = 1);
-          aggregate_y = foo$y;
-          aggregate_fitted_subset = foo$fitted_subset;
-          aggregate_count = foo[,3];
-          order_increasing_y = order(aggregate_fitted_subset,aggregate_y);
-          order_decreasing_y = order(aggregate_fitted_subset,-aggregate_y);
-          aggregate_fitted_label = cumsum(!duplicated(aggregate_fitted_subset[order_increasing_y]));
-          ncomplete_subset1 = min_to_separate(aggregate_y[order_increasing_y],aggregate_fitted_label,aggregate_count[order_increasing_y], overlap_allowed);
-          ncomplete_subset2 = min_to_separate(aggregate_y[order_decreasing_y],aggregate_fitted_label,aggregate_count[order_decreasing_y], overlap_allowed);
-          curr_min_ub = min(ncomplete_subset1$ub,ncomplete_subset2$ub);
-          if(curr_min_ub < min_ub) {
-            #cat("new min_ub =", curr_min_ub,"\n");
-            min_ub = curr_min_ub;
-            min_plane = coef(model_subset);
-            if(ncomplete_subset1$ub <= ncomplete_subset2$ub) {
-              min_subset = sort(order_increasing_y[ncomplete_subset1$sep_subseq]);
-            } else {
-              min_subset = sort(order_decreasing_y[ncomplete_subset2$sep_subseq]);
-            }
-          }
-          #If we've achieved an upperbound of 1 and have already checked that separation doesn't exist in 
-          #the complete dataset, then an upper bound of 1 is the best we can do
-          if(min_ub <= min(j,1)) {
-            lowest_ub_found = T;#Flag that separation was identified
-            break;
-          }
-          i = i + 1;
-        }
-        if(lowest_ub_found | j >= loop_stop) {
-          break;
-        }
-      }
-    }
-    return_vals = list(statistic = min_ub,
-                       included_subset = min_subset,
-                       linear_separator = min_plane,
-                       solitary_separators = solitary_separators);
-  }
-  return(return_vals)
-}
-
 
 #Identifies smallest non-trivial separation of an ordered binary sequence
 #Specifically, it identifies the the smallest number of elements of the sequence
