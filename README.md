@@ -5,6 +5,9 @@
 Boonstra, Philip S., Barbaro, Ryan P., and Sen, Ananda. "Default Priors for the Intercept Parameter in Logistic Regressions" (March 2018). The University of Michigan Department of Biostatistics Working Paper Series. Working Paper 123.
 https://biostats.bepress.com/umichbiostat/paper123
 
+[![DOI](https://zenodo.org/badge/143364337.svg)](https://zenodo.org/badge/latestdoi/143364337)
+
+
 ## Executive Summary
 
 The functions <samp>glm_HSBeta</samp> and <samp>glm_LogisBeta</samp> implement the primary methodological development in this manuscript. They are wrappers for code written in STAN that implements Bayesian logistic regressions using horseshoe-type or logistic-type priors on the regression coefficients $\beta$, respectively. Most importantly for this paper, however, they allow the user to choose from a number of priors on the intercept parameter $\alpha$, including a student-$t$, logistic, or exponential-power prior. 
